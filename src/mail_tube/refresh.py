@@ -36,7 +36,7 @@ def refresh_profile(
     errors: list[str] = []
 
     if not api_key:
-        message = "Missing YOUTUBE_API_KEY environment variable."
+        message = "Missing YOUTUBE_API_KEY. Set it in .mailtube.env or your environment."
         db.finish_refresh_run(
             run_id,
             status="error",

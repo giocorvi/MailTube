@@ -4,3 +4,4 @@ __pycache__/
 .uv-cache/
 mail_tube.db
 keys/
+.mailtube.env

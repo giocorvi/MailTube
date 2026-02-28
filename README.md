@@ -1,6 +1,12 @@
-# MailTube
+<p align="center">
+  <img src="resources/MailTube-logo_v0.png" alt="MailTube Logo" width="140">
+</p>
 
-Less algo slop, more control.
+<h1 align="center">MailTube</h1>
+
+<p align="center"><strong>Less algorithm, less slop, more control.</strong></p>
+
+<p align="center">MailTube is a personal inbox for your YouTube feed, so you can review new uploads on your terms.</p>
 
 ## Get a YouTube API Key
 
@@ -11,11 +17,15 @@ MailTube needs `YOUTUBE_API_KEY` to refresh videos.
 3. Enable **YouTube Data API v3** for that project.
 4. Go to **APIs & Services → Credentials**.
 5. Create an **API key** and copy it.
-6. Export it in your shell:
+6. Configure it locally:
 
 ```bash
-export YOUTUBE_API_KEY=your_key_here
+cp .mailtube.env.example .mailtube.env
+# then edit .mailtube.env and set YOUTUBE_API_KEY
 ```
+
+MailTube automatically loads `.mailtube.env` from the repo root.
+If you also export `YOUTUBE_API_KEY` in your shell, the shell value takes precedence.
 
 ## Start the App
 

@@ -8,6 +8,7 @@ import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import ParseResult, parse_qs, urlencode, urlparse
 
+from .config import get_youtube_api_key
 from .db import Database
 from .refresh import refresh_all_profiles, refresh_profile
 from .youtube import build_embed_url
@@ -99,25 +100,26 @@ STAR_FILLED_ICON_SVG = (
     "</svg>"
 )
 
-AVATAR_ICON_SVG = (
-    '<svg viewBox="0 0 24 24" aria-hidden="true">'
-    '<circle cx="12" cy="8" r="3.2"></circle>'
-    '<path d="M5.5 19c.9-3 3.4-5 6.5-5s5.6 2 6.5 5"></path>'
-    '<circle cx="12" cy="12" r="9.2"></circle>'
-    "</svg>"
-)
-
 BACK_ICON_SVG = (
     '<svg viewBox="0 0 24 24" aria-hidden="true">'
     '<path d="M15 18l-6-6 6-6"></path>'
     "</svg>"
 )
 
-FILTER_ICON_SVG = (
-    '<svg viewBox="0 0 24 24" aria-hidden="true">'
-    '<path d="M4 6h16l-6.5 7.5V19l-3 1v-6.5L4 6"></path>'
-    "</svg>"
-)
+
+def _inbox_location(
+    profile_id: int,
+    active_list: str,
+    *,
+    page: int | None = None,
+    open_item_id: int | None = None,
+) -> str:
+    payload: dict[str, int | str] = {"profile": profile_id, "list": active_list}
+    if page is not None:
+        payload["page"] = max(1, page)
+    if open_item_id is not None and open_item_id > 0:
+        payload["open"] = open_item_id
+    return f"/inbox?{urlencode(payload)}"
 
 
 def _base_layout(title: str, body: str) -> str:
@@ -129,213 +131,451 @@ def _base_layout(title: str, body: str) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{safe_title}</title>
   <style>
+    @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Saira+Semi+Condensed:wght@500;600;700&display=swap");
     :root {{
-      --bg: #0f1f36;
-      --panel: #182a44;
-      --panel-2: #1f3452;
-      --border: #314b70;
-      --text: #f2f7ff;
-      --muted: #b8c9e2;
-      --primary: #4cc9f0;
-      --warning: #ff7b72;
-      --ok: #4caf50;
+      --bg: #07090d;
+      --bg-elev: #0d1118;
+      --bg-elev-2: #111724;
+      --line: #253247;
+      --line-soft: #1b2638;
+      --text: #d8e3f4;
+      --muted: #8499b7;
+      --accent: #1ec4ff;
+      --accent-soft: rgba(30, 196, 255, 0.17);
+      --danger: #ff6464;
+      --ok: #5ff7ae;
+      --radius: 14px;
+      --radius-tight: 10px;
+      --shadow: 0 24px 48px rgba(0, 0, 0, 0.32);
+      --workspace-max-width: 1760px;
+      --rail-col-width: 220px;
+      --center-col-min: 620px;
+      --dock-col-min: 320px;
+      --dock-col-max: 500px;
     }}
-    * {{ box-sizing: border-box; }}
+    * {{
+      box-sizing: border-box;
+    }}
     body {{
       margin: 0;
-      background: radial-gradient(circle at top, #19325a, var(--bg) 58%);
-      color: var(--text);
-      font-family: Merriweather, "Iowan Old Style", Georgia, "Times New Roman", serif;
       min-height: 100vh;
+      color: var(--text);
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+      background:
+        radial-gradient(circle at 10% 10%, rgba(30, 196, 255, 0.1), transparent 30%),
+        radial-gradient(circle at 80% 5%, rgba(95, 247, 174, 0.08), transparent 28%),
+        linear-gradient(120deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(0deg, var(--bg), #05070a 58%);
+      background-size: auto, auto, 28px 28px, auto;
+      background-repeat: no-repeat, no-repeat, repeat, repeat;
+      background-attachment: fixed, fixed, fixed, fixed;
     }}
-    .app-header {{
+    body::before {{
+      content: "";
       position: fixed;
-      top: 8px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 950;
-      font-family: "Google Sans", "Product Sans", "HelveticaInseratLTStd-Condensed", "Helvetica Neue Condensed Bold", "Arial Narrow", "Nimbus Sans Narrow", "Liberation Sans Narrow", sans-serif;
-      font-size: 2.75rem;
-      letter-spacing: 0.01em;
-      font-weight: 700;
-      font-stretch: normal;
-      line-height: 1.08;
-      padding: 0 0.08em;
-      color: #e8f2ff;
-      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.2);
-      -webkit-font-smoothing: antialiased;
-      -moz-osx-font-smoothing: grayscale;
+      inset: 0;
       pointer-events: none;
+      background: linear-gradient(rgba(255, 255, 255, 0.015), rgba(0, 0, 0, 0.08));
+      mix-blend-mode: soft-light;
     }}
-    .app-header-inner {{
-      display: inline-flex;
+    .app-frame {{
+      width: min(var(--workspace-max-width), calc(100vw - 28px));
+      margin: 14px auto 24px;
+      position: relative;
+      z-index: 1;
+    }}
+    .workspace {{
+      display: grid;
+      grid-template-columns:
+        var(--rail-col-width)
+        minmax(var(--center-col-min), 1fr)
+        minmax(var(--dock-col-min), var(--dock-col-max));
+      gap: 12px;
+      align-items: start;
+    }}
+    .panel {{
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, var(--bg-elev-2), var(--bg-elev));
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(3px);
+    }}
+    .rail {{
+      padding: 16px 14px;
+      position: sticky;
+      top: 10px;
+      max-height: calc(100vh - 24px);
+      overflow: auto;
+      animation: rise-in 280ms ease-out both;
+    }}
+    .rail-brand {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      font-family: "Saira Semi Condensed", "Arial Narrow", sans-serif;
+      font-size: 1.3rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }}
+    .rail-brand img {{
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+      filter: saturate(1.25);
+    }}
+    .rail-group {{
+      margin-bottom: 18px;
+      border-top: 1px solid var(--line-soft);
+      padding-top: 12px;
+    }}
+    .rail-label {{
+      color: var(--muted);
+      font-size: 0.7rem;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+      display: block;
+    }}
+    .rail-link {{
+      display: block;
+      color: var(--text);
+      text-decoration: none;
+      border: 1px solid var(--line-soft);
+      border-radius: var(--radius-tight);
+      padding: 9px 10px;
+      margin-bottom: 7px;
+      transition: border-color 140ms ease, transform 140ms ease, background-color 140ms ease;
+      background: rgba(255, 255, 255, 0.01);
+    }}
+    .rail-link:hover {{
+      border-color: #386096;
+      background: rgba(255, 255, 255, 0.035);
+      transform: translateX(2px);
+    }}
+    .rail-link.active {{
+      border-color: var(--accent);
+      box-shadow: inset 2px 0 0 var(--accent), 0 0 0 1px rgba(30, 196, 255, 0.15);
+      background: linear-gradient(90deg, rgba(30, 196, 255, 0.12), rgba(30, 196, 255, 0.03));
+    }}
+    .rail-tool-link {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--text);
+      text-decoration: none;
+      border: 1px solid #3f526f;
+      border-radius: var(--radius-tight);
+      padding: 9px 10px;
+      margin-bottom: 7px;
+      transition: border-color 140ms ease, background-color 140ms ease, transform 140ms ease;
+      background: linear-gradient(90deg, rgba(30, 196, 255, 0.11), rgba(30, 196, 255, 0.03));
+      font-size: 0.82rem;
+      letter-spacing: 0.03em;
+      text-transform: capitalize;
+      font-weight: 500;
+    }}
+    .rail-tool-link::after {{
+      content: "↗";
+      color: var(--accent);
+      font-size: 0.85rem;
+    }}
+    .rail-tool-link:hover {{
+      border-color: #63bfff;
+      background: linear-gradient(90deg, rgba(30, 196, 255, 0.2), rgba(30, 196, 255, 0.06));
+      transform: translateX(1px);
+    }}
+    .rail-future {{
+      color: var(--muted);
+      border: 1px dashed #31445f;
+      border-radius: var(--radius-tight);
+      padding: 9px 10px;
+      margin-bottom: 7px;
+      font-size: 0.87rem;
+      opacity: 0.88;
+    }}
+    .workspace-main {{
+      padding: 12px;
+      display: grid;
+      gap: 12px;
+      animation: rise-in 320ms ease-out both;
+      animation-delay: 80ms;
+    }}
+    .workspace-head {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      border: 1px solid var(--line-soft);
+      border-radius: var(--radius-tight);
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.015);
+    }}
+    .workspace-title {{
+      margin: 0;
+      font-family: "Saira Semi Condensed", "Arial Narrow", sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 1rem;
+    }}
+    .workspace-subtitle {{
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.76rem;
+    }}
+    .head-actions {{
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }}
+    .banner {{
+      border: 1px solid #6b2a2a;
+      background: rgba(130, 34, 34, 0.15);
+      border-radius: var(--radius-tight);
+      padding: 9px 10px;
+      color: #ffc7c7;
+    }}
+    .message-list {{
+      display: grid;
+      gap: 8px;
+    }}
+    .message-row {{
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      border: 1px solid var(--line-soft);
+      border-radius: var(--radius-tight);
+      padding: 11px 10px;
+      background: linear-gradient(160deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0));
+      transition: border-color 130ms ease, transform 130ms ease;
+    }}
+    .message-row:hover {{
+      border-color: #406997;
+      transform: translateY(-1px);
+    }}
+    .message-row.active {{
+      border-color: var(--accent);
+      box-shadow: inset 2px 0 0 var(--accent);
+      background: linear-gradient(90deg, rgba(30, 196, 255, 0.09), rgba(30, 196, 255, 0.02));
+    }}
+    .message-main a {{
+      color: var(--text);
+      text-decoration: none;
+      display: inline-block;
+      line-height: 1.4;
+      font-weight: 500;
+    }}
+    .message-main a:hover {{
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+    }}
+    .message-meta {{
+      color: var(--muted);
+      font-size: 0.77rem;
+      margin-top: 6px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }}
+    .message-actions {{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }}
+    .watch-dock {{
+      padding: 12px;
+      position: sticky;
+      top: 10px;
+      animation: rise-in 340ms ease-out both;
+      animation-delay: 140ms;
+      overflow: auto;
+      max-height: calc(100vh - 24px);
+    }}
+    .watch-dock-head {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }}
+    .watch-title {{
+      margin: 0;
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }}
+    .watch-dock-empty {{
+      border: 1px dashed #355173;
+      border-radius: var(--radius-tight);
+      padding: 16px 12px;
+      color: var(--muted);
+      line-height: 1.55;
+      background: rgba(255, 255, 255, 0.015);
+      min-height: 220px;
+      display: grid;
+      align-content: center;
+    }}
+    .watch-item-title {{
+      margin: 0 0 8px;
+      line-height: 1.4;
+      font-size: 1rem;
+    }}
+    .watch-meta {{
+      color: var(--muted);
+      font-size: 0.78rem;
+      margin: 0 0 10px;
+    }}
+    iframe {{
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      border: 1px solid #213149;
+      border-radius: var(--radius-tight);
+      background: #000;
+    }}
+    .watch-actions {{
+      margin-top: 10px;
+      display: flex;
+      gap: 7px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }}
+    .pagination {{
+      border-top: 1px solid var(--line-soft);
+      margin-top: 2px;
+      padding-top: 10px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
       align-items: center;
       gap: 10px;
     }}
-    .app-header-text {{
+    .pagination .next {{
+      text-align: right;
+    }}
+    .pagination p {{
+      margin: 0;
+      color: var(--muted);
+      text-align: center;
+      font-size: 0.75rem;
+      letter-spacing: 0.04em;
+    }}
+    .drawer-title {{
+      margin: 0;
+      font-family: "Saira Semi Condensed", "Arial Narrow", sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }}
+    .drawer-row {{
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }}
+    .drawer-link {{
       display: inline-flex;
-      align-items: baseline;
-      gap: 0;
-      white-space: nowrap;
+      border: 1px solid var(--line-soft);
+      border-radius: 999px;
+      padding: 8px 11px;
+      color: var(--text);
+      text-decoration: none;
+      font-size: 0.78rem;
+      background: rgba(255, 255, 255, 0.015);
     }}
-    .app-header-logo {{
-      width: 52px;
-      height: 52px;
-      object-fit: contain;
-      opacity: 0.95;
-      transform: translateY(-5px);
-    }}
-    .app-header-mail {{
-      color: #e8f2ff;
-    }}
-    .app-header-tube {{
-      color: #89a3c2;
-    }}
-    main {{
-      width: min(1100px, 95vw);
-      margin: 94px auto 40px auto;
+    .settings-shell {{
+      max-width: 1100px;
+      margin: 0 auto;
       display: grid;
-      gap: 16px;
-      padding-bottom: 84px;
+      gap: 12px;
     }}
-    .card {{
-      background: linear-gradient(180deg, var(--panel-2), var(--panel));
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 14px;
+    .settings-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
     }}
-    .muted {{ color: var(--muted); }}
-    .row {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
+    .settings-title {{
+      margin: 0;
+      font-family: "Saira Semi Condensed", "Arial Narrow", sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      font-size: 1rem;
+    }}
+    .settings-subtitle {{
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.75rem;
+    }}
+    .settings-panel {{
+      padding: 12px;
+    }}
     table {{
       width: 100%;
       border-collapse: collapse;
+      font-size: 0.85rem;
     }}
     th, td {{
       text-align: left;
-      border-top: 1px solid var(--border);
-      padding: 10px 8px;
+      border-top: 1px solid var(--line-soft);
+      padding: 9px 8px;
       vertical-align: top;
     }}
-    th {{ color: var(--muted); font-weight: 600; }}
-    input, select, button {{
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 10px;
-      background: #14243c;
-      color: var(--text);
-    }}
-    .minimal-select {{
-      appearance: none;
-      -webkit-appearance: none;
-      -moz-appearance: none;
-      min-width: 150px;
-      padding: 8px 34px 8px 12px;
-      border-radius: 999px;
-      border-color: #3a567f;
-      background-color: rgba(20, 36, 60, 0.95);
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 5l4 4 4-4' fill='none' stroke='%23c5d4ea' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 10px center;
-      background-size: 12px 12px;
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-      transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
-      cursor: pointer;
-      line-height: 1.2;
-    }}
-    .minimal-select:hover {{
-      border-color: #4a6993;
-      background-color: rgba(25, 45, 72, 0.98);
-    }}
-    .minimal-select:focus {{
-      outline: none;
-      border-color: #7fb2de;
-      box-shadow: 0 0 0 3px rgba(127, 178, 222, 0.18);
-    }}
-    .minimal-select option {{
-      background: #162843;
-      color: var(--text);
-    }}
-    button {{
-      cursor: pointer;
-      background: #1d3e60;
-      border-color: #2d5a87;
-    }}
-    .danger {{ color: var(--warning); }}
-    .ok {{ color: var(--ok); }}
-    .banner {{
-      border: 1px solid #6e3c3c;
-      background: #2a1f24;
-      border-radius: 10px;
-      padding: 10px 12px;
-    }}
-    .inbox-list {{
-      display: grid;
-      gap: 10px;
-    }}
-    .inbox-item {{
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 12px;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: rgba(255, 255, 255, 0.04);
-      padding: 12px;
-    }}
-    .item-main a {{
-      color: var(--text);
-      text-decoration: none;
-      font-weight: 650;
-      line-height: 1.35;
-    }}
-    .item-main a:hover {{
-      text-decoration: underline;
-    }}
-    .item-meta {{
+    th {{
       color: var(--muted);
-      font-size: 0.9rem;
-      margin-top: 6px;
+      font-size: 0.73rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
     }}
-    .item-actions {{
+    .row {{
       display: flex;
       align-items: center;
       gap: 8px;
-      flex-shrink: 0;
+      flex-wrap: wrap;
+    }}
+    input, select, button {{
+      border: 1px solid #2b3a52;
+      border-radius: 999px;
+      padding: 8px 11px;
+      background: #0d1626;
+      color: var(--text);
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+      font-size: 0.8rem;
+      min-height: 34px;
+    }}
+    input, select {{
+      min-width: 0;
+    }}
+    button {{
+      cursor: pointer;
+      transition: border-color 130ms ease, background-color 130ms ease;
+    }}
+    button:hover {{
+      border-color: #4f82c3;
+      background: #132038;
+    }}
+    button:focus-visible,
+    a:focus-visible,
+    summary:focus-visible,
+    input:focus-visible,
+    select:focus-visible {{
+      outline: none;
+      box-shadow: 0 0 0 2px var(--accent-soft);
+      border-color: var(--accent);
     }}
     .icon-button {{
-      padding: 4px 8px;
-      border-radius: 999px;
-      min-width: 30px;
-      line-height: 1;
-      font-size: 14px;
-      background: #1f4469;
-      display: grid;
-      place-items: center;
-    }}
-    .icon-button svg {{
-      width: 15px;
-      height: 15px;
-      stroke: currentColor;
-      fill: none;
-      stroke-width: 1.8;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }}
-    .icon-button.starred {{
-      color: #f7d774;
-      border-color: #d6b85b;
-    }}
-    .icon-link-button {{
+      min-width: 34px;
       width: 34px;
       height: 34px;
-      display: inline-grid;
+      padding: 0;
+      display: grid;
       place-items: center;
-      border: 1px solid var(--border);
       border-radius: 999px;
-      background: #1d3e60;
-      color: var(--text);
-      text-decoration: none;
     }}
+    .icon-button svg,
     .icon-link-button svg {{
       width: 15px;
       height: 15px;
@@ -345,294 +585,89 @@ def _base_layout(title: str, body: str) -> str:
       stroke-linecap: round;
       stroke-linejoin: round;
     }}
-    .floating-back {{
-      position: fixed;
-      top: 12px;
-      left: 12px;
-      z-index: 1000;
+    .icon-button.starred {{
+      color: #f5d56b;
+      border-color: #f5d56b;
     }}
-    .floating-actions {{
-      position: fixed;
-      top: 12px;
-      left: 12px;
-      z-index: 1000;
-      display: flex;
-      gap: 8px;
-    }}
-    .floating-actions button,
-    .floating-actions a {{
-      width: 36px;
-      height: 36px;
-      padding: 0;
-      border-radius: 999px;
-      font-size: 16px;
-      display: grid;
-      place-items: center;
-      line-height: 1;
-    }}
-    .floating-actions a {{
-      text-decoration: none;
-      color: var(--text);
-      border: 1px solid var(--border);
-      background: #1d3e60;
-    }}
-    .floating-actions .icon-link-button {{
+    .icon-link-button {{
       width: 34px;
       height: 34px;
-    }}
-    .floating-actions a svg,
-    .floating-actions button svg {{
-      width: 15px;
-      height: 15px;
-      stroke: currentColor;
-      fill: none;
-      stroke-width: 1.8;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }}
-    .profile-badge {{
-      position: fixed;
-      top: 12px;
-      right: 12px;
-      z-index: 1000;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 4px 0;
+      border: 1px solid #2b3a52;
+      border-radius: 999px;
       color: var(--text);
-      font-size: 0.92rem;
-      opacity: 0.95;
-    }}
-    .profile-avatar {{
-      width: 18px;
-      height: 18px;
+      text-decoration: none;
       display: inline-grid;
       place-items: center;
+      background: #0d1626;
+      flex-shrink: 0;
     }}
-    .profile-badge-link {{
-      text-decoration: none;
-      padding: 2px 4px;
-      border-radius: 14px;
-      border: 1px solid transparent;
-      transition: background-color 120ms ease, border-color 120ms ease;
+    .muted {{
+      color: var(--muted);
     }}
-    .profile-badge-link:hover,
-    .profile-badge-link:focus-visible {{
-      background: rgba(255, 255, 255, 0.08);
-      border-color: var(--border);
+    .danger {{
+      color: var(--danger);
     }}
-    .profile-avatar svg {{
-      width: 16px;
-      height: 16px;
-      stroke: currentColor;
-      fill: none;
-      stroke-width: 1.8;
-      stroke-linecap: round;
-      stroke-linejoin: round;
+    .ok {{
+      color: var(--ok);
     }}
-    .profile-menu {{
-      position: fixed;
-      top: 12px;
-      right: 12px;
-      z-index: 1100;
+    .empty-state {{
+      padding: 26px 20px;
+      border: 1px dashed #31445f;
+      border-radius: var(--radius-tight);
+      text-align: center;
+      color: var(--muted);
+      line-height: 1.6;
+      background: rgba(255, 255, 255, 0.012);
     }}
-    .profile-menu details {{
-      position: relative;
-    }}
-    .profile-menu summary {{
-      list-style: none;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      cursor: pointer;
-      color: var(--text);
-      padding: 2px 4px;
-      border-radius: 14px;
-      border: 1px solid transparent;
-      transition: background-color 120ms ease, border-color 120ms ease;
-      user-select: none;
-    }}
-    .profile-menu summary::-webkit-details-marker {{
+    .mobile-close {{
       display: none;
     }}
-    .profile-menu summary:hover,
-    .profile-menu details[open] summary,
-    .profile-menu summary:focus-visible {{
-      background: rgba(255, 255, 255, 0.08);
-      border-color: var(--border);
+    @media (max-width: 1180px) {{
+      .workspace {{
+        grid-template-columns: 190px minmax(420px, 1fr) minmax(280px, 390px);
+      }}
     }}
-    .profile-menu-panel {{
-      position: absolute;
-      top: 38px;
-      right: 0;
-      width: min(310px, 88vw);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      background: linear-gradient(180deg, var(--panel-2), var(--panel));
-      padding: 10px;
-      display: grid;
-      gap: 10px;
-      box-shadow: 0 16px 32px rgba(0, 0, 0, 0.28);
+    @media (max-width: 980px) {{
+      .workspace {{
+        grid-template-columns: 1fr;
+      }}
+      .rail {{
+        position: static;
+        max-height: none;
+      }}
+      .watch-dock {{
+        position: static;
+        max-height: none;
+      }}
+      .watch-dock.has-item {{
+        position: fixed;
+        inset: 10px;
+        margin: 0;
+        z-index: 60;
+        overflow: auto;
+      }}
+      .mobile-close {{
+        display: inline-flex;
+      }}
     }}
-    .profile-menu-list {{
-      display: grid;
-      gap: 4px;
-      max-height: 220px;
-      overflow: auto;
-    }}
-    .profile-menu-item {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      padding: 4px 2px;
-    }}
-    .profile-menu-item form {{
-      margin: 0;
-    }}
-    .profile-menu-create {{
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 8px;
-    }}
-    .profile-menu-create input {{
-      min-width: 0;
-      width: 100%;
-    }}
-    .list-switcher-bar {{
-      display: flex;
-      gap: 6px;
-      align-items: center;
-      margin-bottom: 14px;
-    }}
-    .list-switcher-bar a {{
-      display: inline-block;
-      text-decoration: none;
-      color: var(--text);
-      padding: 4px 10px;
-      border-radius: 8px;
-      background: rgba(255, 255, 255, 0.02);
-    }}
-    .list-switcher-bar a.active {{
-      background: #224a70;
-      border: 1px solid var(--primary);
-    }}
-    .pagination-footer {{
-      position: fixed;
-      left: 50%;
-      bottom: 10px;
-      transform: translateX(-50%);
-      width: min(1100px, 95vw);
-      display: grid;
-      grid-template-columns: 1fr auto 1fr;
-      align-items: center;
-      gap: 10px;
-      margin-top: 2px;
-      background: rgba(15, 31, 54, 0.9);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 8px 12px;
-      z-index: 900;
-    }}
-    .pagination-footer .page-info {{
-      margin: 0;
-      text-align: center;
-    }}
-    .pagination-footer .next {{
-      text-align: right;
-    }}
-    .watch-below-actions {{
-      display: flex;
-      justify-content: flex-end;
-      margin-top: -6px;
-    }}
-    .watch-below-actions .icon-button svg {{
-      width: 17px;
-      height: 17px;
-    }}
-    iframe {{
-      width: 100%;
-      aspect-ratio: 16 / 9;
-      border: 0;
-      border-radius: 10px;
+    @keyframes rise-in {{
+      from {{
+        opacity: 0;
+        transform: translateY(8px);
+      }}
+      to {{
+        opacity: 1;
+        transform: translateY(0);
+      }}
     }}
   </style>
 </head>
 <body>
-  <header class="app-header">
-    <span class="app-header-inner">
-      <img class="app-header-logo" src="/resources/MailTube-logo_v0.png" alt="" aria-hidden="true">
-      <span class="app-header-text"><span class="app-header-mail">Mail</span><span class="app-header-tube">Tube</span></span>
-    </span>
-  </header>
-  <main>
+  <main class="app-frame">
     {body}
   </main>
 </body>
 </html>"""
-
-
-def _profile_badge(name: str | None, *, switch_href: str | None = None) -> str:
-    label = _safe_display_text(name) if name else "No profile"
-    if switch_href:
-        return (
-            f'<a class="profile-badge profile-badge-link" href="{html.escape(switch_href, quote=True)}" '
-            f'title="Switch profile" aria-label="Switch profile"><span class="profile-avatar">{AVATAR_ICON_SVG}</span><span>{label}</span></a>'
-        )
-    return f'<div class="profile-badge"><span class="profile-avatar">{AVATAR_ICON_SVG}</span><span>{label}</span></div>'
-
-
-def _profile_menu(
-    current_name: str | None,
-    profiles: list[sqlite3.Row],
-    *,
-    current_profile_id: int,
-    return_to: str,
-) -> str:
-    label = _safe_display_text(current_name) if current_name else "No profile"
-    safe_return_to = html.escape(return_to, quote=True)
-    items: list[str] = []
-    for row in profiles:
-        profile_id = int(row["id"])
-        profile_name = _safe_display_text(row["name"])
-        if profile_id == current_profile_id:
-            action = '<span class="muted">Active</span>'
-        else:
-            action = f"""
-            <form method="post" action="/profiles/set-active">
-              <input type="hidden" name="profile_id" value="{profile_id}">
-              <input type="hidden" name="return_to" value="{safe_return_to}">
-              <button type="submit">Switch</button>
-            </form>
-            """
-        items.append(
-            f"""
-            <div class="profile-menu-item">
-              <span>{profile_name}</span>
-              {action}
-            </div>
-            """
-        )
-    return f"""
-    <div class="profile-menu">
-      <details>
-        <summary title="Switch profile" aria-label="Switch profile">
-          <span class="profile-avatar">{AVATAR_ICON_SVG}</span>
-          <span>{label}</span>
-        </summary>
-        <div class="profile-menu-panel">
-          <div class="profile-menu-list">
-            {''.join(items)}
-          </div>
-          <form method="post" action="/profiles/create" class="profile-menu-create">
-            <input type="hidden" name="return_to" value="{safe_return_to}">
-            <input type="text" name="name" placeholder="New profile" required>
-            <button type="submit">Add</button>
-          </form>
-        </div>
-      </details>
-    </div>
-    """
 
 
 class MailTubeHandler(BaseHTTPRequestHandler):
@@ -758,15 +793,24 @@ class MailTubeHandler(BaseHTTPRequestHandler):
         body = _base_layout(
             "mail-tube",
             f"""
-            {_profile_badge(None)}
-            <section class="card">
-              <h1>mail-tube</h1>
-              <p class="muted">No profiles yet. Create one below to start syncing an inbox.</p>
-              <form method="post" action="/profiles/create" class="row">
-                <input type="hidden" name="return_to" value="{target}">
-                <input type="text" name="name" placeholder="Profile name" required>
-                <button type="submit">Create profile</button>
-              </form>
+            <section class="panel settings-shell">
+              <header class="settings-header">
+                <div>
+                  <h1 class="settings-title">Mailbox Bootstrap</h1>
+                  <p class="settings-subtitle">Create your first profile to start syncing channels.</p>
+                </div>
+                <img src="/resources/MailTube-logo_v0.png" alt="" aria-hidden="true" width="36" height="36">
+              </header>
+              <div class="settings-panel">
+                <div class="empty-state">
+                  No profiles yet. Once a profile is created, MailTube can refresh your inbox stream.
+                </div>
+                <form method="post" action="/profiles/create" class="row" style="margin-top:12px;">
+                  <input type="hidden" name="return_to" value="{target}">
+                  <input type="text" name="name" placeholder="Profile name" required>
+                  <button type="submit">Create profile</button>
+                </form>
+              </div>
             </section>
             """,
         )
@@ -801,6 +845,16 @@ class MailTubeHandler(BaseHTTPRequestHandler):
             statuses = ("new",)
 
         page = max(1, _to_int((query.get("page") or [None])[0], default=1))
+        selected_open_id = _to_int((query.get("open") or [None])[0], default=-1)
+        selected_item: sqlite3.Row | None = None
+        if selected_open_id > 0:
+            candidate = self.db.get_inbox_item_with_video(selected_open_id)
+            if candidate and int(candidate["profile_id"]) == profile_id:
+                self.db.mark_inbox_opened(selected_open_id)
+                selected_item = self.db.get_inbox_item_with_video(selected_open_id)
+            else:
+                selected_open_id = -1
+
         offset = (page - 1) * self.page_size
         total = self.db.count_inbox_items(profile_id, statuses=statuses, starred_only=starred_only)
         items = self.db.list_inbox_items(
@@ -811,10 +865,16 @@ class MailTubeHandler(BaseHTTPRequestHandler):
             starred_only=starred_only,
         )
         latest_run = self.db.latest_refresh_run(profile_id)
-        return_to = f"/inbox?{urlencode({'profile': profile_id, 'list': active_list, 'page': page})}"
+        return_to = _inbox_location(profile_id, active_list, page=page, open_item_id=selected_open_id)
         profile_switch_return = f"/inbox?{urlencode({'list': active_list, 'page': page})}"
+        list_labels = {
+            "inbox": "Inbox",
+            "watched": "Watched",
+            "starred": "Starred",
+            "trash": "Trash",
+        }
 
-        rows = []
+        rows: list[str] = []
         for item in items:
             inbox_item_id = int(item["inbox_item_id"])
             title = _safe_display_text(item["title"])
@@ -822,32 +882,30 @@ class MailTubeHandler(BaseHTTPRequestHandler):
             published = _relative_published_label(item["published_at"])
             status = str(item["status"])
             is_starred = bool(item["is_starred"])
-            open_link = f"/watch/{inbox_item_id}?{urlencode({'profile': profile_id, 'list': active_list, 'page': page})}"
+            open_link = _inbox_location(profile_id, active_list, page=page, open_item_id=inbox_item_id)
+            item_return = _inbox_location(
+                profile_id,
+                active_list,
+                page=page,
+                open_item_id=selected_open_id if selected_open_id > 0 else None,
+            )
             actions: list[str] = []
             if status == "new":
                 actions.append(
                     f"""
                     <form method="post" action="/inbox/item/{inbox_item_id}/watch">
-                      <input type="hidden" name="return_to" value="{return_to}">
+                      <input type="hidden" name="return_to" value="{item_return}">
                       <button class="icon-button" type="submit" title="Move to watched" aria-label="Move to watched">{EYE_ICON_SVG}</button>
                     </form>
                     """
                 )
-            elif status == "watched":
-                actions.append(
-                    f"""
-                    <form method="post" action="/inbox/item/{inbox_item_id}/unwatch">
-                      <input type="hidden" name="return_to" value="{return_to}">
-                      <button class="icon-button" type="submit" title="Move to inbox" aria-label="Move to inbox">↺</button>
-                    </form>
-                    """
-                )
             else:
+                restore_label = "Move to inbox" if status == "watched" else "Restore to inbox"
                 actions.append(
                     f"""
                     <form method="post" action="/inbox/item/{inbox_item_id}/unwatch">
-                      <input type="hidden" name="return_to" value="{return_to}">
-                      <button class="icon-button" type="submit" title="Restore to inbox" aria-label="Restore to inbox">↺</button>
+                      <input type="hidden" name="return_to" value="{item_return}">
+                      <button class="icon-button" type="submit" title="{restore_label}" aria-label="{restore_label}">↺</button>
                     </form>
                     """
                 )
@@ -860,7 +918,7 @@ class MailTubeHandler(BaseHTTPRequestHandler):
                 actions.append(
                     f"""
                     <form method="post" action="/inbox/item/{inbox_item_id}/{star_action}">
-                      <input type="hidden" name="return_to" value="{return_to}">
+                      <input type="hidden" name="return_to" value="{item_return}">
                       <button class="icon-button{starred_class}" type="submit" title="{star_title}" aria-label="{star_title}">{star_icon}</button>
                     </form>
                     """
@@ -870,19 +928,22 @@ class MailTubeHandler(BaseHTTPRequestHandler):
                 actions.append(
                     f"""
                     <form method="post" action="/inbox/item/{inbox_item_id}/trash">
-                      <input type="hidden" name="return_to" value="{return_to}">
+                      <input type="hidden" name="return_to" value="{item_return}">
                       <button class="icon-button" type="submit" title="Move to trash" aria-label="Move to trash">{TRASH_ICON_SVG}</button>
                     </form>
                     """
                 )
+            active_class = " active" if inbox_item_id == selected_open_id else ""
             rows.append(
                 f"""
-                <article class="inbox-item">
-                  <div class="item-main">
+                <article class="message-row{active_class}">
+                  <div class="message-main">
                     <a href="{open_link}">{title}</a>
-                    <div class="item-meta">{channel} · {html.escape(published)}</div>
+                    <div class="message-meta">
+                      <span>{channel} | {html.escape(published)}</span>
+                    </div>
                   </div>
-                  <div class="item-actions">
+                  <div class="message-actions">
                     {''.join(actions)}
                   </div>
                 </article>
@@ -899,57 +960,156 @@ class MailTubeHandler(BaseHTTPRequestHandler):
             empty_text = html.escape(empty_labels.get(active_list, "No items."))
             rows.append(
                 f"""
-                <div class="muted">{empty_text}</div>
+                <div class="empty-state">{empty_text}</div>
                 """
             )
 
         prev_link = ""
         if page > 1:
-            prev_link = (
-                f'<a href="/inbox?{urlencode({"profile": profile_id, "list": active_list, "page": page - 1})}">'
-                "Previous</a>"
-            )
+            prev_link = f'<a class="drawer-link" href="{_inbox_location(profile_id, active_list, page=page - 1)}">Previous</a>'
         next_link = ""
         if offset + len(items) < total:
-            next_link = (
-                f'<a href="/inbox?{urlencode({"profile": profile_id, "list": active_list, "page": page + 1})}">'
-                "Next</a>"
-            )
+            next_link = f'<a class="drawer-link" href="{_inbox_location(profile_id, active_list, page=page + 1)}">Next</a>'
 
         banner = ""
         if latest_run and latest_run["status"] != "ok":
             error_text = html.escape(latest_run["error_message"] or "Refresh failed.")
             banner = f'<div class="banner"><strong>Refresh issue:</strong> {error_text}</div>'
 
+        selected_dock = """
+            <div class="watch-dock-empty">
+              Select an item from the stream to open the watch dock. On mobile, the dock becomes a full-screen sheet.
+            </div>
+        """
+        dock_class = ""
+        if selected_item:
+            selected_title = _safe_display_text(selected_item["title"])
+            selected_channel = _safe_display_text(selected_item["channel_title"] or "Unknown channel")
+            selected_status = str(selected_item["status"])
+            embed_url = html.escape(build_embed_url(selected_item["youtube_video_id"], autoplay=True), quote=True)
+            close_link = _inbox_location(profile_id, active_list, page=page)
+            dock_actions: list[str] = []
+
+            if selected_status == "new":
+                dock_actions.append(
+                    f"""
+                    <form method="post" action="/inbox/item/{selected_open_id}/watch">
+                      <input type="hidden" name="return_to" value="{return_to}">
+                      <button type="submit">Mark watched</button>
+                    </form>
+                    """
+                )
+            else:
+                dock_actions.append(
+                    f"""
+                    <form method="post" action="/inbox/item/{selected_open_id}/unwatch">
+                      <input type="hidden" name="return_to" value="{return_to}">
+                      <button type="submit">Move to inbox</button>
+                    </form>
+                    """
+                )
+
+            if selected_status in {"new", "watched"}:
+                selected_is_starred = bool(selected_item["is_starred"])
+                star_action = "unstar" if selected_is_starred else "star"
+                star_title = "Unstar" if selected_is_starred else "Star"
+                star_icon = STAR_FILLED_ICON_SVG if selected_is_starred else STAR_ICON_SVG
+                star_class = " starred" if selected_is_starred else ""
+                dock_actions.append(
+                    f"""
+                    <form method="post" action="/inbox/item/{selected_open_id}/{star_action}">
+                      <input type="hidden" name="return_to" value="{return_to}">
+                      <button class="icon-button{star_class}" type="submit" title="{star_title}" aria-label="{star_title}">{star_icon}</button>
+                    </form>
+                    """
+                )
+
+            if selected_status != "dismissed":
+                dock_actions.append(
+                    f"""
+                    <form method="post" action="/inbox/item/{selected_open_id}/trash">
+                      <input type="hidden" name="return_to" value="{return_to}">
+                      <button class="icon-button" type="submit" title="Move to trash" aria-label="Move to trash">{TRASH_ICON_SVG}</button>
+                    </form>
+                    """
+                )
+
+            selected_dock = f"""
+                <div class="watch-dock-head">
+                  <h3 class="watch-title">Watch Dock</h3>
+                  <a class="icon-link-button mobile-close" href="{close_link}" title="Close watch dock" aria-label="Close watch dock">{BACK_ICON_SVG}</a>
+                </div>
+                <p class="watch-item-title">{selected_title}</p>
+                <p class="watch-meta">{selected_channel} · {html.escape(selected_status)}</p>
+                <iframe
+                  src="{embed_url}"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  referrerpolicy="strict-origin-when-cross-origin"
+                  allowfullscreen
+                  title="YouTube video player"></iframe>
+                <div class="watch-actions">
+                  <a class="drawer-link" href="{close_link}" title="Close watch dock" aria-label="Close watch dock">Close</a>
+                  {''.join(dock_actions)}
+                </div>
+            """
+            dock_class = " has-item"
+
         body = _base_layout(
             "mail-tube inbox",
             f"""
-            {_profile_menu(profile["name"], profiles, current_profile_id=profile_id, return_to=profile_switch_return)}
-            <div class="floating-actions">
-              <form method="post" action="/inbox/refresh">
-                <input type="hidden" name="profile_id" value="{profile_id}">
-                <input type="hidden" name="return_to" value="{return_to}">
-                <button type="submit" title="Refresh now" aria-label="Refresh now">↻</button>
-              </form>
-              <a href="/filters?{urlencode({'profile': profile_id})}" title="Edit filters" aria-label="Edit filters">{FILTER_ICON_SVG}</a>
+            <div class="workspace">
+              <aside class="panel rail">
+                <div class="rail-brand">
+                  <img src="/resources/MailTube-logo_v0.png" alt="" aria-hidden="true">
+                  <span>MailTube</span>
+                </div>
+                <div class="rail-group">
+                  <span class="rail-label">System Lists</span>
+                  <a class="rail-link {'active' if active_list == 'inbox' else ''}" href="{_inbox_location(profile_id, 'inbox')}">Inbox</a>
+                  <a class="rail-link {'active' if active_list == 'starred' else ''}" href="{_inbox_location(profile_id, 'starred')}">Starred</a>
+                  <a class="rail-link {'active' if active_list == 'watched' else ''}" href="{_inbox_location(profile_id, 'watched')}">Watched</a>
+                  <a class="rail-link {'active' if active_list == 'trash' else ''}" href="{_inbox_location(profile_id, 'trash')}">Trash</a>
+                </div>
+                <div class="rail-group">
+                  <span class="rail-label">Custom Lists (Soon)</span>
+                  <div class="rail-future">Priority Queue</div>
+                  <div class="rail-future">Research Sprint</div>
+                  <div class="rail-future">Longform Weekend</div>
+                </div>
+                <div class="rail-group">
+                  <span class="rail-label">Workspace Tools</span>
+                  <a class="rail-tool-link" href="/filters?{urlencode({'profile': profile_id})}">Edit Filters</a>
+                  <a class="rail-tool-link" href="/profiles?{urlencode({'return_to': profile_switch_return})}">Manage Profiles</a>
+                </div>
+              </aside>
+              <section class="panel workspace-main">
+                <header class="workspace-head">
+                  <div>
+                    <h1 class="workspace-title">{html.escape(list_labels.get(active_list, "Inbox"))} Stream</h1>
+                    <p class="workspace-subtitle">profile {html.escape(profile["name"])} · showing {len(items)} of {total}</p>
+                  </div>
+                  <div class="head-actions">
+                    <form method="post" action="/inbox/refresh">
+                      <input type="hidden" name="profile_id" value="{profile_id}">
+                      <input type="hidden" name="return_to" value="{return_to}">
+                      <button type="submit" title="Refresh now" aria-label="Refresh now">Refresh</button>
+                    </form>
+                  </div>
+                </header>
+                {banner}
+                <div class="message-list">
+                  {''.join(rows)}
+                </div>
+                <div class="pagination">
+                  <div>{prev_link}</div>
+                  <p>Page {page}</p>
+                  <div class="next">{next_link}</div>
+                </div>
+              </section>
+              <aside class="panel watch-dock{dock_class}">
+                {selected_dock}
+              </aside>
             </div>
-            <section>
-              <nav class="list-switcher-bar">
-                <a class="{'active' if active_list == 'inbox' else ''}" href="/inbox?{urlencode({'profile': profile_id, 'list': 'inbox'})}">Inbox</a>
-                <a class="{'active' if active_list == 'watched' else ''}" href="/inbox?{urlencode({'profile': profile_id, 'list': 'watched'})}">Watched</a>
-                <a class="{'active' if active_list == 'starred' else ''}" href="/inbox?{urlencode({'profile': profile_id, 'list': 'starred'})}">Starred</a>
-                <a class="{'active' if active_list == 'trash' else ''}" href="/inbox?{urlencode({'profile': profile_id, 'list': 'trash'})}">Trash</a>
-              </nav>
-              {banner}
-              <div class="inbox-list">
-                {''.join(rows)}
-              </div>
-              <div class="pagination-footer">
-                <div>{prev_link}</div>
-                <p class="muted page-info">Page {page}</p>
-                <div class="next">{next_link}</div>
-              </div>
-            </section>
             """,
         )
         self._send_html(body)
@@ -1003,49 +1163,61 @@ class MailTubeHandler(BaseHTTPRequestHandler):
         if not rows:
             rows.append('<tr><td colspan="8" class="muted">No filters yet.</td></tr>')
 
+        back_link = _inbox_location(profile_id, "inbox")
+
         body = _base_layout(
             "mail-tube filters",
             f"""
-            {_profile_badge(profile["name"], switch_href=profile_switch_link)}
-            <a class="icon-link-button floating-back" href="/inbox?{urlencode({'profile': profile_id})}" title="Back to inbox" aria-label="Back to inbox">{BACK_ICON_SVG}</a>
-            <section>
-              <h2>Add filter</h2>
-              <form method="post" action="/filters/add" class="row">
-                <input type="hidden" name="profile_id" value="{profile_id}">
-                <input type="text" name="channel_input" placeholder="Channel URL or @handle" required>
-                <input type="text" name="keyword" placeholder="Optional keyword">
-                <select class="minimal-select" name="duration_bucket">
-                  <option value="">Any length</option>
-                  <option value="short">Short (&lt;5m)</option>
-                  <option value="medium">Medium (5-20m)</option>
-                  <option value="long">Long (&gt;20m)</option>
-                </select>
-                <select class="minimal-select" name="since_mode">
-                  <option value="anytime">Anytime</option>
-                  <option value="from_now">From now</option>
-                </select>
-                <button type="submit">Add</button>
-              </form>
-            </section>
-            <section>
-              <h2>Current filters</h2>
-              <table>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Channel Input</th>
-                    <th>Resolved Channel</th>
-                    <th>Keyword</th>
-                    <th>Length</th>
-                    <th>Time</th>
-                    <th>State</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {''.join(rows)}
-                </tbody>
-              </table>
+            <section class="settings-shell">
+              <header class="panel settings-header">
+                <div>
+                  <h1 class="settings-title">Filter Matrix</h1>
+                  <p class="settings-subtitle">Profile: {html.escape(profile["name"])}</p>
+                </div>
+                <div class="row">
+                  <a class="icon-link-button" href="{back_link}" title="Back to inbox" aria-label="Back to inbox">{BACK_ICON_SVG}</a>
+                  <a class="drawer-link" href="{profile_switch_link}">Switch profile</a>
+                </div>
+              </header>
+              <section class="panel settings-panel">
+                <h2 class="drawer-title">Add Filter</h2>
+                <form method="post" action="/filters/add" class="row">
+                  <input type="hidden" name="profile_id" value="{profile_id}">
+                  <input type="text" name="channel_input" placeholder="Channel URL or @handle" required>
+                  <input type="text" name="keyword" placeholder="Optional keyword">
+                  <select name="duration_bucket">
+                    <option value="">Any length</option>
+                    <option value="short">Short (&lt;5m)</option>
+                    <option value="medium">Medium (5-20m)</option>
+                    <option value="long">Long (&gt;20m)</option>
+                  </select>
+                  <select name="since_mode">
+                    <option value="anytime">Anytime</option>
+                    <option value="from_now">From now</option>
+                  </select>
+                  <button type="submit">Add</button>
+                </form>
+              </section>
+              <section class="panel settings-panel">
+                <h2 class="drawer-title">Current Filters</h2>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Channel Input</th>
+                      <th>Resolved Channel</th>
+                      <th>Keyword</th>
+                      <th>Length</th>
+                      <th>Time</th>
+                      <th>State</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {''.join(rows)}
+                  </tbody>
+                </table>
+              </section>
             </section>
             """,
         )
@@ -1085,28 +1257,36 @@ class MailTubeHandler(BaseHTTPRequestHandler):
         body = _base_layout(
             "mail-tube profiles",
             f"""
-            {_profile_badge(active_name)}
-            <a class="icon-link-button floating-back" href="{html.escape(return_to, quote=True)}" title="Back" aria-label="Back">{BACK_ICON_SVG}</a>
-            <section>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Profile</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {''.join(rows)}
-                </tbody>
-              </table>
-            </section>
-            <section>
-              <h2>Create profile</h2>
-              <form method="post" action="/profiles/create" class="row">
-                <input type="hidden" name="return_to" value="{html.escape(return_to, quote=True)}">
-                <input type="text" name="name" placeholder="Profile name" required>
-                <button type="submit">Create</button>
-              </form>
+            <section class="settings-shell">
+              <header class="panel settings-header">
+                <div>
+                  <h1 class="settings-title">Profiles</h1>
+                  <p class="settings-subtitle">Active: {html.escape(active_name or "None")}</p>
+                </div>
+                <a class="icon-link-button" href="{html.escape(return_to, quote=True)}" title="Back" aria-label="Back">{BACK_ICON_SVG}</a>
+              </header>
+              <section class="panel settings-panel">
+                <h2 class="drawer-title">Switch Profile</h2>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Profile</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {''.join(rows)}
+                  </tbody>
+                </table>
+              </section>
+              <section class="panel settings-panel">
+                <h2 class="drawer-title">Create Profile</h2>
+                <form method="post" action="/profiles/create" class="row">
+                  <input type="hidden" name="return_to" value="{html.escape(return_to, quote=True)}">
+                  <input type="text" name="name" placeholder="Profile name" required>
+                  <button type="submit">Create</button>
+                </form>
+              </section>
             </section>
             """,
         )
@@ -1129,75 +1309,18 @@ class MailTubeHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
             return
 
-        self.db.mark_inbox_opened(inbox_item_id)
         profile_id = int(item["profile_id"])
-        profile = self.db.get_profile_by_id(profile_id)
-        profile_name = profile["name"] if profile else None
         active_list = (query.get("list") or ["inbox"])[0]
         if active_list not in {"inbox", "watched", "trash", "starred"}:
             active_list = "inbox"
         page = max(1, _to_int((query.get("page") or [None])[0], default=1))
-        back_link = f"/inbox?{urlencode({'profile': profile_id, 'list': active_list, 'page': page})}"
-        profile_switch_return = f"/inbox?{urlencode({'list': active_list, 'page': page})}"
-        profile_switch_link = f"/profiles?{urlencode({'return_to': profile_switch_return})}"
-        return_to = parsed.path
-        if parsed.query:
-            return_to = f"{return_to}?{parsed.query}"
-        status = str(item["status"])
-        watch_actions = [
-            f'<a class="icon-link-button" href="{back_link}" title="Back to inbox" aria-label="Back to inbox">{BACK_ICON_SVG}</a>'
-        ]
-        star_action_html = ""
-        if status in {"new", "watched"}:
-            is_starred = bool(item["is_starred"])
-            star_action = "unstar" if is_starred else "star"
-            star_title = "Remove star" if is_starred else "Save item"
-            star_icon = STAR_FILLED_ICON_SVG if is_starred else STAR_ICON_SVG
-            star_class = " starred" if is_starred else ""
-            star_action_html = (
-                f"""
-                <form method="post" action="/inbox/item/{inbox_item_id}/{star_action}">
-                  <input type="hidden" name="return_to" value="{return_to}">
-                  <button class="icon-button{star_class}" type="submit" title="{star_title}" aria-label="{star_title}">{star_icon}</button>
-                </form>
-                """
-            )
-        star_section = ""
-        if star_action_html:
-            star_section = f"""
-            <section>
-              <div class="watch-below-actions">
-                {star_action_html}
-              </div>
-            </section>
-            """
-        embed_url = html.escape(build_embed_url(item["youtube_video_id"], autoplay=True), quote=True)
-
-        body = _base_layout(
-            "mail-tube watch",
-            f"""
-            {_profile_badge(profile_name, switch_href=profile_switch_link)}
-            <div class="floating-actions">
-              {''.join(watch_actions)}
-            </div>
-            <section>
-              <iframe
-                src="{embed_url}"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                referrerpolicy="strict-origin-when-cross-origin"
-                allowfullscreen
-                title="YouTube video player"></iframe>
-            </section>
-            {star_section}
-            """,
-        )
-        self._send_html(body)
+        self._redirect(_inbox_location(profile_id, active_list, page=page, open_item_id=inbox_item_id))
 
     def _post_refresh(self, form: dict[str, str]) -> None:
         profile_id = _to_int(form.get("profile_id"), default=-1)
         return_to = form.get("return_to")
         if profile_id > 0:
-            refresh_profile(self.db, profile_id, api_key=os.getenv("YOUTUBE_API_KEY"))
+            refresh_profile(self.db, profile_id, api_key=get_youtube_api_key())
             self._redirect(return_to or f"/inbox?{urlencode({'profile': profile_id})}")
             return
         self._redirect("/inbox")
@@ -1301,7 +1424,7 @@ def run_server(
     page_size: int = 20,
 ) -> None:
     if startup_refresh:
-        refresh_all_profiles(db, api_key=os.getenv("YOUTUBE_API_KEY"))
+        refresh_all_profiles(db, api_key=get_youtube_api_key())
 
     class BoundHandler(MailTubeHandler):
         pass

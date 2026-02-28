@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import html
-import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -11,6 +10,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .db import Database
+from .config import get_youtube_api_key, load_local_env
 from .refresh import refresh_profile
 from .web import run_server
 from .youtube import build_embed_url, extract_video_id
@@ -240,6 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    load_local_env()
 
     if args.command == "dev":
         run_dev_server(args)
@@ -324,7 +325,7 @@ def main() -> None:
             outcome = refresh_profile(
                 db,
                 int(profile["id"]),
-                api_key=os.getenv("YOUTUBE_API_KEY"),
+                api_key=get_youtube_api_key(),
             )
             print(
                 f"Refresh {outcome.status}: fetched={outcome.fetched_count} "
